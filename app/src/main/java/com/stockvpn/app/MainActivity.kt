@@ -3,6 +3,7 @@ package com.stockvpn.app
 import android.app.Activity
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
 import android.util.Base64
 import android.widget.Toast
@@ -13,17 +14,21 @@ import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
+    private var pendingConfig: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        binding.btnDisconnect.isEnabled = false
+
         binding.btnConnect.setOnClickListener {
             val key = binding.etKey.text.toString().trim()
             if (key.startsWith("vmess://")) {
                 val config = parseVmess(key)
                 if (config != null) {
+                    pendingConfig = config
                     val intent = VpnService.prepare(this)
                     if (intent != null) {
                         startActivityForResult(intent, VPN_REQUEST_CODE)
@@ -40,24 +45,33 @@ class MainActivity : AppCompatActivity() {
 
         binding.btnDisconnect.setOnClickListener {
             stopService(Intent(this, com.v2ray.ang.V2rayVPNService::class.java))
-            binding.tvStatus.text = "Отключено"
+            binding.tvStatus.text = "Статус: отключено"
+            binding.btnDisconnect.isEnabled = false
+            binding.btnConnect.isEnabled = true
         }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == VPN_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
-            val key = binding.etKey.text.toString().trim()
-            val config = parseVmess(key)
-            if (config != null) startVpn(config)
+            pendingConfig?.let { startVpn(it) }
+        } else if (requestCode == VPN_REQUEST_CODE) {
+            Toast.makeText(this, "Разрешение VPN отклонено", Toast.LENGTH_SHORT).show()
+            pendingConfig = null
         }
     }
 
     private fun startVpn(config: String) {
         val intent = Intent(this, com.v2ray.ang.V2rayVPNService::class.java)
         intent.putExtra("CONFIG", config)
-        startService(intent)
-        binding.tvStatus.text = "Подключение..."
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+        binding.tvStatus.text = "Статус: подключение..."
+        binding.btnConnect.isEnabled = false
+        binding.btnDisconnect.isEnabled = true
     }
 
     private fun parseVmess(link: String): String? {
@@ -105,10 +119,19 @@ class MainActivity : AppCompatActivity() {
                     if (net == "ws") {
                         put("wsSettings", JSONObject().apply {
                             put("path", path)
+                            put("headers", JSONObject().apply {
+                                if (host.isNotEmpty()) put("Host", host)
+                            })
+                        })
+                    }
+                    if (net == "http") {
+                        put("httpSettings", JSONObject().apply {
+                            put("path", path)
                             if (host.isNotEmpty()) {
-                                put("headers", JSONObject().apply {
-                                    put("Host", host)
-                                })
+                                put("host", JSONArray().put(host))
+                            }
+                            if (type.isNotEmpty() && type != "none") {
+                                put("method", type)
                             }
                         })
                     }
